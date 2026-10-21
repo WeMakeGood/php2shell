@@ -106,7 +106,9 @@ do_prepare() {
   step "create $STATE and back up /etc, the package list and the site baseline"
   if [ "$YES" -eq 1 ]; then
     mkdir -p "$STATE/sources.d"
-    tar czf "$STATE/etc-$FROM.tgz" /etc 2>/dev/null && echo "   $STATE/etc-$FROM.tgz ($(du -h "$STATE/etc-$FROM.tgz" | cut -f1))"
+    # Keep the first backup: it is the "before" state that verify compares against.
+    if [ -e "$STATE/etc-$FROM.tgz" ]; then echo "   $STATE/etc-$FROM.tgz already exists; keeping it"
+    else tar czf "$STATE/etc-$FROM.tgz" /etc 2>/dev/null && echo "   $STATE/etc-$FROM.tgz ($(du -h "$STATE/etc-$FROM.tgz" | cut -f1))"; fi
     dpkg-query -W -f='${Package} ${Version}\n' > "$STATE/versions-$FROM.txt"
     apt-mark showmanual > "$STATE/manual-$FROM.txt"
     save_restore_set
@@ -123,6 +125,21 @@ do_prepare() {
     if [ "$YES" -eq 1 ]; then [ -e "$STATE/sources.d/$(basename "$f")" ] || cp -a "$f" "$STATE/sources.d/"; mv "$f" "$STATE/sources.d/moved-$(basename "$f")"; fi
   done
   if grep -vE '^\s*(#|$)' /etc/apt/sources.list 2>/dev/null | grep -qvE 'ubuntu\.com|mirrors\.digitalocean\.com/ubuntu'; then warn "/etc/apt/sources.list contains non-Ubuntu lines; edit them out by hand"; fi
+  step "use Ubuntu's official archive in sources.list (the release tool disables unknown mirrors such as mirrors.digitalocean.com; on one server that left no 'main' component, so it could not find ubuntu-minimal and aborted)"
+  if grep -vE '^\s*(#|$)' /etc/apt/sources.list 2>/dev/null | grep -qvE '(archive|security)\.ubuntu\.com'; then
+    echo "   sources.list uses a non-official mirror; replacing it with archive.ubuntu.com and security.ubuntu.com for $CODENAME (original saved to $STATE/sources.list.orig)"
+    if [ "$YES" -eq 1 ]; then
+      [ -e "$STATE/sources.list.orig" ] || cp -a /etc/apt/sources.list "$STATE/sources.list.orig"
+      cat > /etc/apt/sources.list <<EOL
+# Written by php2shell upgrade.sh so do-release-upgrade recognises every source.
+# The original is in $STATE/sources.list.orig
+deb http://archive.ubuntu.com/ubuntu $CODENAME main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu $CODENAME-updates main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu $CODENAME-backports main restricted universe multiverse
+deb http://security.ubuntu.com/ubuntu $CODENAME-security main restricted universe multiverse
+EOL
+    else echo "   [dry-run] would rewrite /etc/apt/sources.list"; fi
+  else echo "   already official"; fi
   step "refresh apt (Ubuntu sources only)"
   act sh -c 'apt-get update 2>&1 | grep -E "^(E|W|Err):" || echo "   clean"'
   if pkg_installed mysql-community-server; then

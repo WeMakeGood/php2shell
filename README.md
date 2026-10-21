@@ -4,7 +4,7 @@ Scripts for checking and temporarily mitigating the PHP2Shell flaws (CVE-2026-10
 
 These are **not** a fix. The fix is a patched PHP build (8.5.12, 8.4.27, 8.3.36, 8.2.35 or a vendor backport). PHP 8.1 and older have no upstream release.
 
-**Current release: `v1.5.0`**
+**Current release: `v1.5.1`**
 
 ## Quick start (run as root on each server)
 
@@ -15,7 +15,7 @@ Snapshot the droplet first, then paste this one line. It fetches the current rel
 4. re-audits, so the final Summary shows the state after the changes.
 
 ```sh
-cd /root && rm -rf php2shell && git clone --branch v1.5.0 --depth 1 https://github.com/WeMakeGood/php2shell.git && cd php2shell && ./run.sh
+cd /root && rm -rf php2shell && git clone --branch v1.5.1 --depth 1 https://github.com/WeMakeGood/php2shell.git && cd php2shell && ./run.sh
 ```
 
 - **Stop-level signs** are a process spawned by a PHP worker, a known backdoor in a live site folder, or `/etc/ld.so.preload`. On any of these `run.sh` exits with code 3, prints `STOPPED`, and changes nothing. Review the report before doing anything else.
@@ -82,13 +82,14 @@ reboot
 ```
 
 What to expect, from rehearsals on a clone of a real server:
+- **The release tool disables mirrors it doesn't recognise.** Servers whose `sources.list` points at `mirrors.digitalocean.com` can end up with no `main` component for the next release, and the tool aborts with "ubuntu-minimal was not downloadable". `prepare` therefore rewrites `sources.list` to Ubuntu's official archive (original saved in the state folder). This hit a real server on two attempts and did not happen on its clones.
 - **The release tool refuses to start** while the dead 20.04 sources are enabled ("install all available updates"), and while Ubuntu's `mysql-server` conflicts with MySQL.com's. `prepare` handles both: it sets third-party sources aside and, with `--swap-mysql`, replaces the MySQL.com packages with Ubuntu's `mysql-server` on the same data directory (no purge).
 - **Hop 1 keeps PHP; hop 2 removes it.** The PPA's PHP and nginx packages survive the first hop but not the second. Sites that need PHP return 502 from then until `post` finishes. Plan a maintenance window.
 - **nginx, Node and Redis are replaced by Ubuntu's own,** and MySQL by Ubuntu's. The existing `nginx.conf`, `php.ini`, `www.conf`, `sshd_config`, ufw rules and sudoers files were all left unchanged.
 - **SSH drops for several minutes** while `sshd` is restarted.
 - **Launchpad returns 503s under load.** `post` retries. To avoid depending on it, copy the PHP `.deb` files for the target release into `/var/cache/apt/archives` before `post`; apt verifies each against the signed index it downloads itself, so nothing is trusted just because it is there.
 
-Limits: rehearsed on clones of one server (5 WordPress sites, PHP 8.1, MySQL.com 8.0). Not yet run on a production server. Servers with PHP 7.x or 8.0 sites are untested, and whether the PPA's 24.04 builds of those versions carry the PHP2Shell fix has not been checked. Forge's ability to manage the server afterwards can only be checked on the real server.
+Limits: rehearsed on clones of one server (5 WordPress sites, PHP 8.1, MySQL.com 8.0), then hop 1 was run on that server in production: Forge stayed connected and could restart PHP, and all sites matched their baseline. Hop 2 has not been run in production. Servers with PHP 7.x or 8.0 sites are untested, and whether the PPA's 24.04 builds of those versions carry the PHP2Shell fix has not been checked. Forge's ability to manage the server afterwards can only be checked on the real server.
 
 ## Limits
 
