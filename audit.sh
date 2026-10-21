@@ -6,21 +6,24 @@
 # patching so we know what each server actually has (Ubuntu 20.04 boxes in
 # particular: nobody has confirmed the PPA ships fixed builds for them).
 #
-# Usage: sudo ./audit.sh [--days N] [--refresh]
+# Usage: sudo ./audit.sh [--days N] [--refresh] [--no-scan]
 #   --days N   look-back window for "recently modified" checks (default 7)
 #   --refresh  run `apt-get update` first so candidate versions are current
+#   --no-scan  skip the slower signature sweep of /home for known backdoors
 
 set -u
 
 DAYS=7
 REFRESH=0
+SCAN=1
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --days) DAYS="${2:-}"; shift 2 ;;
     --refresh) REFRESH=1; shift ;;
+    --no-scan) SCAN=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -53,7 +56,13 @@ version_ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$2" ]; 
 
 if [ "$REFRESH" -eq 1 ]; then
   h "apt-get update"
-  apt-get update 2>&1 | tail -5
+  upd=$(apt-get update 2>&1)
+  echo "$upd" | grep -E '^(E|W):' || echo "clean"
+  # A failed refresh leaves old indexes behind, so "Candidate" versions below
+  # would look current while actually being stale.
+  if echo "$upd" | grep -qE '^E:'; then
+    warn "apt-get update reported errors; candidate versions below may be stale"
+  fi
 fi
 
 h "System"
@@ -167,9 +176,11 @@ found=0
 for p in /proc/[0-9]*; do
   if readlink "$p/exe" 2>/dev/null | grep -q '(deleted)'; then
     pid=${p#/proc/}
-    # Old php-fpm binaries are expected before a restart; reported above instead.
-    tr '\0' ' ' < "$p/cmdline" | grep -q 'php-fpm: ' && continue
-    echo "pid $pid: $(tr '\0' ' ' < "$p/cmdline")"
+    cmd=$(tr '\0' ' ' < "$p/cmdline")
+    # Old php-fpm binaries are expected before a restart (reported above).
+    # bpfilter_umh is a kernel-spawned helper whose binary is always "deleted".
+    case "$cmd" in 'php-fpm: '*|bpfilter_umh*) continue ;; esac
+    echo "pid $pid: $cmd"
     found=1
   fi
 done
@@ -184,18 +195,57 @@ up=$(find /home -xdev -type f \
   \( -iname '*.php' -o -iname '*.phtml' -o -iname '*.phar' -o -iname '*.php[0-9]' \) \
   -path '*/wp-content/uploads/*' ! \( -name index.php -size -100c \) 2>/dev/null)
 if [ -n "$up" ]; then
-  echo "$up" | head -50
-  echo "total: $(echo "$up" | wc -l)"
-  warn "PHP files in wp-content/uploads (see report)"
+  echo "total: $(echo "$up" | wc -l). Counts by first folder under uploads:"
+  echo "$up" | sed 's#.*/wp-content/uploads/##' \
+    | awk -F/ '{print (NF>1 ? $1 : "(uploads root)")}' | sort | uniq -c | sort -rn | head -20
+  # Plugin caches and WP All Import's functions.php are normal output that
+  # buried everything else in a 75-file list; they stay counted above.
+  echo "-- everything except uploads/cache/ and wpallimport/functions.php (nothing capped) --"
+  echo "$up" | grep -vE '/wp-content/uploads/(cache/|([^/]+/)*wpallimport/functions\.php$)'
+  warn "PHP files in wp-content/uploads (review the list above)"
 else
   echo "none"
+fi
+
+if [ "$SCAN" -eq 1 ]; then
+  echo "-- known backdoor signatures (2index.php / lock360.php dropper family seen on fhs00037) --"
+  # Strings come from one real infection, so a clean result only rules out that family.
+  nm=$(find /home -xdev -type f \( -iname '2index.php' -o -iname 'lock360*.php' \) 2>/dev/null)
+  sig=$(nice -n 19 grep -rIlF --include='*.php' \
+    -e 'SylVxy' -e 'bfb4eade88a375174d761b45848fb36a' -e 'jkv2.com' -e 'lock360' /home 2>/dev/null)
+  hits=$(printf '%s\n%s\n' "$nm" "$sig" | sed '/^$/d' | sort -u)
+  if [ -n "$hits" ]; then
+    live=$(echo "$hits" | grep -vE '/(backups|public\.bak|migrate)/')
+    bak=$(echo "$hits" | grep -E '/(backups|public\.bak|migrate)/')
+    if [ -n "$live" ]; then
+      echo "MATCHES OUTSIDE BACKUP-LOOKING PATHS:"; echo "$live"
+      warn "known backdoor signature outside backup folders (see report)"
+    fi
+    if [ -n "$bak" ]; then
+      echo "matches in backup-looking paths: $(echo "$bak" | wc -l) (first 20)"; echo "$bak" | head -20
+      warn "backdoor signatures in backup copies: past infection; confirm nginx never serves these folders"
+    fi
+  else
+    echo "none"
+  fi
+
+  echo "-- eval() of base64/gzinflate outside backups (plugins occasionally match; review) --"
+  gen=$(nice -n 19 grep -rIlE --include='*.php' 'eval\((gzinflate|base64_decode|str_rot13|gzuncompress)\(' /home 2>/dev/null \
+    | grep -vE '/(backups|public\.bak|migrate)/')
+  if [ -n "$gen" ]; then
+    echo "$gen" | head -30; echo "total: $(echo "$gen" | wc -l)"
+    warn "eval(base64/gzinflate) patterns found (review)"
+  else
+    echo "none"
+  fi
 fi
 
 echo "-- PHP files modified in last $DAYS days outside plugins/themes/core/cache/vendor --"
 recent=$(find /home -xdev \
   \( -path '*/wp-content/plugins' -o -path '*/wp-content/themes' -o -path '*/wp-content/upgrade' \
      -o -path '*/wp-content/cache' -o -path '*/wp-content/uploads' -o -path '*/wp-admin' \
-     -o -path '*/wp-includes' -o -name vendor -o -name node_modules -o -name .git \) -prune \
+     -o -path '*/wp-includes' -o -path '*/wp-content/wflogs' -o -path '*/wp-content/jetpack-waf' \
+     -o -path '*/wp-content/languages' -o -name vendor -o -name node_modules -o -name .git \) -prune \
   -o -type f -name '*.php' -mtime "-$DAYS" -print 2>/dev/null)
 if [ -n "$recent" ]; then
   echo "$recent" | head -50
@@ -242,7 +292,15 @@ for d in /root /home/*; do
   [ -f "$k" ] || continue
   echo "$k modified $(stat -c '%y' "$k" | cut -d. -f1)"
   ssh-keygen -lf "$k" 2>/dev/null | sed 's/^/    /'
-  if find "$k" -mtime "-$DAYS" | grep -q .; then
+  # DigitalOcean's web console adds a short-lived key tagged "-dotty_ssh" whose
+  # comment names the logged-in user. Anyone can write that comment, so check
+  # the actor_email is yours.
+  if grep -q -- '-dotty_ssh' "$k"; then
+    echo "    note: contains a DigitalOcean console session key; confirm the actor_email above is you"
+  fi
+  # A console key explains a fresh mtime, so only flag when nothing explains it.
+  # The permanent keys are still listed above for a human to check.
+  if find "$k" -mtime "-$DAYS" | grep -q . && ! grep -q -- '-dotty_ssh' "$k"; then
     warn "authorized_keys changed recently: $k"
   fi
 done
