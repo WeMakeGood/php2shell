@@ -11,7 +11,26 @@ These are **not** a fix. The fix is a patched PHP build (8.5.12, 8.4.27, 8.3.36,
 | `audit.sh` | Reports installed PHP packages, candidate versions, patch verdict per PHP version, which sites use which version, effective ini values, and basic compromise indicators | No (writes one root-only report to `/root`) |
 | `mitigate.sh` | Writes `/etc/php/X/fpm/conf.d/99-php2shell-mitigation.ini` (upload progress off, strict sessions) and reloads FPM. `--dry-run` and `--revert` supported | Yes, reversible |
 
+| `nginx-guard.sh` | Per-site nginx snippets in Forge's `forge-conf/<site>/server/` directory: `--writes` (only GET/HEAD/OPTIONS), `--multipart` (reject multipart bodies), `--cf-only` (accept only Cloudflare's IP ranges). `list`, `apply --dry-run` and `revert` supported | Yes, reversible |
+
 The mitigation only reduces exposure to one suspected attack path. See [PHP's advisory](https://www.php.net/archive/2026.php).
+
+## When no patched PHP exists (Ubuntu 20.04)
+
+The Ondřej PPA publishes only for Ubuntu 22.04 and 24.04, so PHP from it on 20.04 cannot be updated through apt. `nginx-guard.sh` keeps hostile requests away from PHP instead:
+
+```sh
+sudo ./nginx-guard.sh list
+sudo ./nginx-guard.sh apply --writes --cf-only --dry-run site1 site2   # preview
+sudo ./nginx-guard.sh apply --writes --cf-only site1 site2
+sudo ./nginx-guard.sh revert --all
+```
+
+- Nothing applies unless you name sites or pass `--all`. `--all --except a,b` skips sites.
+- `--cf-only` refuses a site unless every hostname in its `server_name` resolves to a Cloudflare address, and refuses entirely if nginx uses the `real_ip` module.
+- After applying, it tests each site from the server itself. A failed self-test returns a non-zero exit code.
+- Sites without Forge's `forge-conf/<site>/server/` include in their nginx file are skipped, never edited.
+- These controls cover the confirmed multipart paths only. They do not fix the bug.
 
 ## Running on a server
 
