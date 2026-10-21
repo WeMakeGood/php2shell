@@ -115,10 +115,14 @@ do_prepare() {
     dpkg-query -W -f='${Package} ${Version}\n' > "$STATE/versions-$FROM.txt"
     apt-mark showmanual > "$STATE/manual-$FROM.txt"
     save_restore_set
-    if [ ! -f "$STATE/baseline-before.txt" ]; then
-      if [ -x "$HERE/preflight.sh" ]; then "$HERE/preflight.sh" 2>/dev/null > "$STATE/preflight-before.txt"; grep '^BASELINE' "$STATE/preflight-before.txt" > "$STATE/baseline-before.txt"; echo "   baseline: $(wc -l < "$STATE/baseline-before.txt") sites"
-      else warn "preflight.sh not found next to this script; no site baseline recorded"; fi
-    fi
+    # The baseline is refreshed on every prepare: it is the "before" state of the hop about to run,
+    # so sites removed on purpose between hops do not show up as differences later.
+    if [ -x "$HERE/preflight.sh" ]; then
+      "$HERE/preflight.sh" 2>/dev/null > "$STATE/preflight-$FROM.txt"
+      grep '^BASELINE' "$STATE/preflight-$FROM.txt" > "$STATE/baseline-$FROM.txt"
+      [ -f "$STATE/baseline-before.txt" ] || cp "$STATE/baseline-$FROM.txt" "$STATE/baseline-before.txt"
+      echo "   baseline for $FROM: $(wc -l < "$STATE/baseline-$FROM.txt") sites"
+    else warn "preflight.sh not found next to this script; no site baseline recorded"; fi
   else echo "   [dry-run] would write backups, the restore set and a site baseline"; fi
   step "keep the existing file on any config conflict during the upgrade"
   act sh -c 'printf "// php2shell: on a config-file conflict during the upgrade, keep the file already on the server.\nDpkg::Options { \"--force-confold\"; \"--force-confdef\"; };\n" > /etc/apt/apt.conf.d/99php2shell-confold'
@@ -209,11 +213,14 @@ do_verify() {
       if [ ! -e "$tmp/etc/$f" ]; then continue; elif [ ! -e "/etc/$f" ]; then echo "  MISSING now: $f"; PROBLEMS=$((PROBLEMS+1)); elif cmp -s "$tmp/etc/$f" "/etc/$f"; then echo "  unchanged: $f"; else echo "  CHANGED:   $f"; PROBLEMS=$((PROBLEMS+1)); fi
     done; rm -rf "$tmp"
   fi
-  if [ -f "$STATE/baseline-before.txt" ] && [ -x "$HERE/preflight.sh" ]; then
-    echo; echo "Site baseline vs before the first hop (a site that times out right after a reboot is retried once):"
+  # Compare with the baseline taken before the hop that led here (22.04 -> the 20.04 one, 24.04 -> the 22.04 one).
+  case "$FROM" in 22.04) prev=20.04 ;; 24.04) prev=22.04 ;; *) prev="" ;; esac
+  ref="$STATE/baseline-$prev.txt"; [ -f "$ref" ] || ref="$STATE/baseline-before.txt"
+  if [ -f "$ref" ] && [ -x "$HERE/preflight.sh" ]; then
+    echo; echo "Site baseline vs $(basename "$ref") (a site that times out right after a reboot is retried once):"
     sleep 15; "$HERE/preflight.sh" 2>/dev/null | grep '^BASELINE' > "$STATE/baseline-now.txt"
-    if ! diff "$STATE/baseline-before.txt" "$STATE/baseline-now.txt" >/dev/null; then sleep 30; "$HERE/preflight.sh" 2>/dev/null | grep '^BASELINE' > "$STATE/baseline-now.txt"; fi
-    if diff "$STATE/baseline-before.txt" "$STATE/baseline-now.txt"; then echo "  all $(wc -l < "$STATE/baseline-now.txt") sites match"; else PROBLEMS=$((PROBLEMS+1)); fi
+    if ! diff "$ref" "$STATE/baseline-now.txt" >/dev/null; then sleep 30; "$HERE/preflight.sh" 2>/dev/null | grep '^BASELINE' > "$STATE/baseline-now.txt"; fi
+    if diff "$ref" "$STATE/baseline-now.txt"; then echo "  all $(wc -l < "$STATE/baseline-now.txt") sites match"; else PROBLEMS=$((PROBLEMS+1)); fi
   fi
   echo; [ "$PROBLEMS" -eq 0 ] && echo "VERIFY: no differences." || echo "VERIFY: $PROBLEMS difference(s) above."
   return "$PROBLEMS"
