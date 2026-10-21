@@ -6,24 +6,27 @@
 # patching so we know what each server actually has (Ubuntu 20.04 boxes in
 # particular: nobody has confirmed the PPA ships fixed builds for them).
 #
-# Usage: sudo ./audit.sh [--days N] [--refresh] [--no-scan]
-#   --days N   look-back window for "recently modified" checks (default 7)
-#   --refresh  run `apt-get update` first so candidate versions are current
-#   --no-scan  skip the slower signature sweep of /home for known backdoors
+# Usage: sudo ./audit.sh [--days N] [--refresh] [--no-scan] [--php-only]
+#   --days N    look-back window for "recently modified" checks (default 7)
+#   --refresh   run `apt-get update` first so candidate versions are current
+#   --no-scan   skip the slower signature sweep of /home for known backdoors
+#   --php-only  report only package, patch and ini state; skip the compromise check
 
 set -u
 
 DAYS=7
 REFRESH=0
 SCAN=1
+PHPONLY=0
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --days) DAYS="${2:-}"; shift 2 ;;
     --refresh) REFRESH=1; shift ;;
     --no-scan) SCAN=0; shift ;;
+    --php-only) PHPONLY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -167,6 +170,7 @@ else
   echo "none"
 fi
 
+if [ "$PHPONLY" -eq 0 ]; then
 h "Compromise check (mtimes can be forged, so this finds careless attackers only)"
 
 echo "-- processes spawned by php-fpm workers (healthy servers show none) --"
@@ -322,6 +326,7 @@ last -n 15 -a 2>/dev/null | head -15
 
 echo "-- listening sockets --"
 ss -tlnp 2>/dev/null
+fi
 
 h "Summary"
 if [ ${#HARD[@]} -gt 0 ]; then

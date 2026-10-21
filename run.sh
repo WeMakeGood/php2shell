@@ -69,9 +69,12 @@ if [ "$NOPATCH" -eq 0 ]; then
   prc=${PIPESTATUS[0]}
 fi
 
-# Re-audit quietly (no refresh, no slow signature sweep) so the final Summary
-# shows the state after mitigation and patching, not before.
-"$here/audit.sh" --no-scan >/dev/null 2>&1
+# Re-audit quietly so the final Summary shows PHP state after mitigation and
+# patching, not before. Compromise checks are skipped: the first audit already
+# did them, and repeating them minutes later only adds false flags (the
+# DigitalOcean console key from the first audit has expired by now, which
+# looks like a changed authorized_keys).
+"$here/audit.sh" --php-only >/dev/null 2>&1
 sleep 1
 final=$(latest_report)
 
