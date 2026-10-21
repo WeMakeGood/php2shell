@@ -60,8 +60,12 @@ if [ "$REFRESH" -eq 1 ]; then
   echo "$upd" | grep -E '^(E|W):' || echo "clean"
   # A failed refresh leaves old indexes behind, so "Candidate" versions below
   # would look current while actually being stale.
-  if echo "$upd" | grep -qE '^E:'; then
-    warn "apt-get update reported errors; candidate versions below may be stale"
+  # Only the PHP repositories matter here; a dead nginx PPA says nothing about
+  # whether PHP candidates are current.
+  if echo "$upd" | grep -qE '^E:.*(ondrej/php|sury)'; then
+    warn "PHP repository failed to refresh; candidate versions below may be stale"
+  elif echo "$upd" | grep -qE '^E:'; then
+    echo "(errors above are from non-PHP repositories)"
   fi
 fi
 
@@ -91,8 +95,11 @@ if ls /etc/nginx/sites-enabled/* >/dev/null 2>&1; then
     sock=$(grep -ho 'php[0-9]\+\.[0-9]\+-fpm' "$f" 2>/dev/null | sort -u | tr '\n' ' ')
     echo "$(basename "$f"): ${sock:-no php-fpm socket}"
   done
-  echo "-- count per version --"
-  grep -ho 'php[0-9]\+\.[0-9]\+-fpm' /etc/nginx/sites-enabled/* 2>/dev/null | sort | uniq -c
+  echo "-- sites per version --"
+  # One line per site file: a site can mention its socket several times.
+  for f in /etc/nginx/sites-enabled/*; do
+    grep -ho 'php[0-9]\+\.[0-9]\+-fpm' "$f" 2>/dev/null | sort -u
+  done | sort | uniq -c
 else
   echo "no nginx sites-enabled found"
 fi
