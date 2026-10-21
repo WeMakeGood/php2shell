@@ -4,7 +4,7 @@ Scripts for checking and temporarily mitigating the PHP2Shell flaws (CVE-2026-10
 
 These are **not** a fix. The fix is a patched PHP build (8.5.12, 8.4.27, 8.3.36, 8.2.35 or a vendor backport). PHP 8.1 and older have no upstream release.
 
-**Current release: `v1.3.0`**
+**Current release: `v1.4.0`**
 
 ## Quick start (run as root on each server)
 
@@ -15,12 +15,13 @@ Snapshot the droplet first, then paste this one line. It fetches the current rel
 4. re-audits, so the final Summary shows the state after the changes.
 
 ```sh
-cd /root && rm -rf php2shell && git clone --branch v1.3.0 --depth 1 https://github.com/WeMakeGood/php2shell.git && cd php2shell && ./run.sh
+cd /root && rm -rf php2shell && git clone --branch v1.4.0 --depth 1 https://github.com/WeMakeGood/php2shell.git && cd php2shell && ./run.sh
 ```
 
 - **Stop-level signs** are a process spawned by a PHP worker, a known backdoor in a live site folder, or `/etc/ld.so.preload`. On any of these `run.sh` exits with code 3, prints `STOPPED`, and changes nothing. Review the report before doing anything else.
 - Other flags (uploads PHP files, recently changed files and so on) are reported for you to review but don't block.
 - **The patch step restarts PHP-FPM** for each version it upgrades (a few seconds of interruption) and may move a branch several releases forward (for example 8.4.5 to 8.4.27). It keeps your edited `php.ini` and pool files, and refuses any upgrade that would remove packages. Where no fixed build exists (for example the Ondřej PPA on Ubuntu 20.04) it says so and changes nothing. Use `./run.sh --no-patch` to skip it.
+- **A failed download during the patch step is usually the repository, not the server.** Launchpad returns 503s under load, and apt abandons the whole upgrade when one package fails to download, so nothing is installed. The patch step retries a few times; if it still fails, run `cd /root/php2shell && ./patch.sh` again. Downloaded packages are cached, so each retry has less left to fetch and a repeat run converges.
 - If the result says `NO FIXED BUILD AVAILABLE` on Ubuntu 22.04 or 24.04, the PPA has probably not published the fixed build for that server's architecture yet (a new PHP release publishes its source first and builds binaries over the following hours). Check again later with `cd /root/php2shell && ./patch.sh`; there's no need to re-clone. Ubuntu 20.04 will keep saying this, because the PPA publishes nothing for it.
 - Long-running workers (Forge daemons, queue workers) keep the old PHP in memory until restarted. The patch step lists any it finds.
 - The final re-audit checks PHP state only. Compromise checks run once, in the first audit, so look at that output if anything was flagged.
@@ -33,7 +34,8 @@ cd /root && rm -rf php2shell && git clone --branch v1.3.0 --depth 1 https://gith
 |---|---|---|
 | `audit.sh` | Reports installed PHP packages, candidate versions, patch verdict per PHP version, which sites use which version, effective ini values, and basic compromise indicators | No (writes one root-only report to `/root`) |
 | `mitigate.sh` | Writes `/etc/php/X/fpm/conf.d/99-php2shell-mitigation.ini` (upload progress off, strict sessions) and reloads FPM. `--dry-run` and `--revert` supported | Yes, reversible |
-| `patch.sh` | Upgrades each installed PHP-FPM version to a build known to carry the fix (upstream 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12, or Ubuntu's own backported revision). Only touches `php<version>-*` packages. `--dry-run` supported; PHP 8.1 and older only with `--include-eol`, reported as unverified | Yes (package upgrade) |
+| `patch.sh` | Upgrades each installed PHP-FPM version to a build that carries the fix. A build counts as fixed if its own changelog names the CVEs (the script downloads the candidate package and reads it), or it is upstream 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 or later, or Ubuntu's own backported revision. Only touches `php<version>-*` packages. Retries transient repository errors. `--dry-run` supported; a newer PHP 8.1-or-older build whose changelog doesn't name the fix is only installed with `--include-eol`, reported as unverified | Yes (package upgrade) |
+| `preflight.sh` | Read-only snapshot for planning an in-place Ubuntu release upgrade: disk, package health, third-party apt sources, where key packages came from, Forge files, and a per-site HTTP baseline (`BASELINE` lines) to compare after each step. Writes nothing | No |
 | `run.sh` | The Quick start: audit, then `mitigate.sh`, then `patch.sh`, then a fresh audit. Stops before changing anything if the audit finds a stop-level sign of compromise | Yes |
 | `nginx-guard.sh` | Per-site nginx snippets in Forge's `forge-conf/<site>/server/` directory: `--writes` (only GET/HEAD/OPTIONS), `--multipart` (reject multipart bodies), `--cf-only` / `--cf-auto` (accept only Cloudflare's IP ranges). `list`, `apply --dry-run` and `revert` supported | Yes, reversible |
 

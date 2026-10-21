@@ -93,18 +93,24 @@ installed_names_fix() {
 
 # Download candidate php<version>-common into a scratch directory (no install)
 # and read its changelog. This is what makes PHP 8.1 and older verifiable.
+# Returns 0 if the changelog names the CVEs, 1 if it does not, 2 if the package
+# could not be downloaded (Launchpad answers 503 under load), so a failed
+# download is never mistaken for "not fixed".
 candidate_names_fix() {
-  local v="$1" cand="$2" d f ok=1
+  local v="$1" cand="$2" d f attempt
   [ -n "$cand" ] && [ "$cand" != "(none)" ] || return 1
-  d=$(mktemp -d) || return 1
-  if ( cd "$d" && apt-get download "php$v-common=$cand" >/dev/null 2>&1 ); then
+  d=$(mktemp -d) || return 2
+  for attempt in 1 2 3 4; do
+    ( cd "$d" && apt-get download -o Acquire::Retries=3 "php$v-common=$cand" >/dev/null 2>&1 )
     f=$(ls "$d"/php"$v"-common_*.deb 2>/dev/null | head -1)
-    if [ -n "$f" ] && dpkg-deb -x "$f" "$d/x" 2>/dev/null; then
-      zgrep -qE 'CVE-2026-10961[89]' "$d/x/usr/share/doc/php$v-common/changelog.Debian.gz" 2>/dev/null && ok=0
-    fi
+    [ -n "$f" ] && break
+    sleep 10
+  done
+  if [ -z "$f" ] || ! dpkg-deb -x "$f" "$d/x" 2>/dev/null; then rm -rf "$d"; return 2; fi
+  if zgrep -qE 'CVE-2026-10961[89]' "$d/x/usr/share/doc/php$v-common/changelog.Debian.gz" 2>/dev/null; then
+    rm -rf "$d"; return 0
   fi
-  rm -rf "$d"
-  return $ok
+  rm -rf "$d"; return 1
 }
 
 pkg_version() { dpkg-query -W -f='${Version}' "$1" 2>/dev/null; }
@@ -140,11 +146,16 @@ for v in $versions; do
   go=0
   if is_fixed "$cand" "$v"; then
     go=1
-  elif [ -n "$cand" ] && [ "$cand" != "(none)" ] && dpkg --compare-versions "$cand" gt "$inst" \
-       && candidate_names_fix "$v" "$cand"; then
-    echo "candidate's changelog names the CVEs"
-    go=1
-  elif [ -z "$(upstream_fixed "$v")" ] && [ -n "$cand" ] && [ "$cand" != "(none)" ] \
+  elif [ -n "$cand" ] && [ "$cand" != "(none)" ] && dpkg --compare-versions "$cand" gt "$inst"; then
+    candidate_names_fix "$v" "$cand"
+    case $? in
+      0) echo "candidate's changelog names the CVEs"; go=1 ;;
+      2) echo "could not download $cand to read its changelog (repository unreachable); not installing"
+         RESULTS+=("PHP $v: could not verify $cand (download failed); try again later")
+         continue ;;
+    esac
+  fi
+  if [ "$go" -eq 0 ] && [ -z "$(upstream_fixed "$v")" ] && [ -n "$cand" ] && [ "$cand" != "(none)" ] \
        && dpkg --compare-versions "$cand" gt "$inst"; then
     # EOL branch with a newer build whose changelog doesn't name the fix.
     verified=0
@@ -185,11 +196,21 @@ for v in $versions; do
   fi
 
   # confold: keep Forge's edited php.ini and pool files instead of prompting.
-  # shellcheck disable=SC2086
-  if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade \
-       -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold $pkgs; then
+  # Launchpad returns transient 503s under load, and apt aborts the whole
+  # transaction on one failed download, so retry before giving up.
+  ok=0
+  for attempt in 1 2 3 4; do
+    # shellcheck disable=SC2086
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade -o Acquire::Retries=5 \
+         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold $pkgs; then
+      ok=1; break
+    fi
+    echo "apt-get attempt $attempt for PHP $v failed; retrying shortly" >&2
+    sleep 20
+  done
+  if [ "$ok" -ne 1 ]; then
     echo "apt-get failed for PHP $v" >&2
-    RESULTS+=("PHP $v: FAILED (apt-get error)")
+    RESULTS+=("PHP $v: FAILED (apt-get error after retries)")
     failed=1
     continue
   fi
