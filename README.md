@@ -4,7 +4,7 @@ Scripts for checking and temporarily mitigating the PHP2Shell flaws (CVE-2026-10
 
 These are **not** a fix. The fix is a patched PHP build (8.5.12, 8.4.27, 8.3.36, 8.2.35 or a vendor backport). PHP 8.1 and older have no upstream release.
 
-**Current release: `v1.2.1`**
+**Current release: `v1.3.0`**
 
 ## Quick start (run as root on each server)
 
@@ -15,7 +15,7 @@ Snapshot the droplet first, then paste this one line. It fetches the current rel
 4. re-audits, so the final Summary shows the state after the changes.
 
 ```sh
-cd /root && rm -rf php2shell && git clone --branch v1.2.1 --depth 1 https://github.com/WeMakeGood/php2shell.git && cd php2shell && ./run.sh
+cd /root && rm -rf php2shell && git clone --branch v1.3.0 --depth 1 https://github.com/WeMakeGood/php2shell.git && cd php2shell && ./run.sh
 ```
 
 - **Stop-level signs** are a process spawned by a PHP worker, a known backdoor in a live site folder, or `/etc/ld.so.preload`. On any of these `run.sh` exits with code 3, prints `STOPPED`, and changes nothing. Review the report before doing anything else.
@@ -24,7 +24,7 @@ cd /root && rm -rf php2shell && git clone --branch v1.2.1 --depth 1 https://gith
 - If the result says `NO FIXED BUILD AVAILABLE` on Ubuntu 22.04 or 24.04, the PPA has probably not published the fixed build for that server's architecture yet (a new PHP release publishes its source first and builds binaries over the following hours). Check again later with `cd /root/php2shell && ./patch.sh`; there's no need to re-clone. Ubuntu 20.04 will keep saying this, because the PPA publishes nothing for it.
 - Long-running workers (Forge daemons, queue workers) keep the old PHP in memory until restarted. The patch step lists any it finds.
 - The final re-audit checks PHP state only. Compromise checks run once, in the first audit, so look at that output if anything was flagged.
-- The Summary prints last, so copy from the `RESULT` line down. The audit prints the release it ran as, and its full report is saved under `/root`. Reports contain cron lines and key comments, so review before sharing them.
+- **Output is short by default.** `run.sh` prints a few progress lines and one result block: server, mitigation, patch outcome per PHP version, and a list of flags to review. Each flag names what it found (process names, the first few file paths). The full audit is saved to `/root/php2shell-audit-<host>-<time>.txt`; add `--verbose` to see everything on screen. Copy from the `php2shell result` line down. Reports contain cron lines and key comments, so review before sharing them.
 - Undo the mitigation with `./mitigate.sh --revert`. `audit.sh`, `mitigate.sh`, `patch.sh` and `nginx-guard.sh` can each be run on their own (`./patch.sh --dry-run` previews the upgrade).
 
 ## Scripts

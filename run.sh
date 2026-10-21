@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # php2shell one-shot: audit, apply the PHP mitigation, install a patched PHP
-# where one exists, then re-audit so the Summary reflects the end state. Stops
+# where one exists, then re-audit so the result reflects the end state. Stops
 # before changing anything if the audit finds a stop-level sign of compromise.
 #
-# Usage: sudo ./run.sh [--no-patch] [--include-eol] [audit.sh options]
+# Quiet by default: it prints a short result block and saves the details. The
+# full audit report is under /root; --verbose also shows everything on screen.
+#
+# Usage: sudo ./run.sh [--verbose] [--no-patch] [--include-eol] [audit.sh options]
+#   --verbose      show the full audit, mitigation and patch output
 #   --no-patch     audit and mitigate only; don't touch PHP packages
 #   --include-eol  also install a newer build for PHP 8.1 and older (unverified)
 #   Other options are passed to audit.sh.
@@ -17,11 +21,13 @@ set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
 
+VERBOSE=0
 NOPATCH=0
 EOL=""
 AUDIT_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
+    --verbose) VERBOSE=1 ;;
     --no-patch) NOPATCH=1 ;;
     --include-eol) EOL="--include-eol" ;;
     *) AUDIT_ARGS+=("$1") ;;
@@ -30,63 +36,108 @@ while [ $# -gt 0 ]; do
 done
 
 latest_report() { ls -t /root/php2shell-audit-*.txt 2>/dev/null | head -1; }
+step() { echo "[$(date +%H:%M:%S)] $*"; }
+# Run a step: full output with --verbose, otherwise saved to a file only.
+quiet() { # quiet <outfile> cmd...
+  local out="$1"; shift
+  if [ "$VERBOSE" -eq 1 ]; then "$@" 2>&1 | tee "$out"; return "${PIPESTATUS[0]}"
+  else "$@" >"$out" 2>&1; return $?; fi
+}
 
-"$here/audit.sh" --refresh ${AUDIT_ARGS[@]+"${AUDIT_ARGS[@]}"}
+host=$(hostname -f 2>/dev/null || hostname)
+ver=$(git -C "$here" describe --tags --always 2>/dev/null || echo unknown)
+# shellcheck disable=SC1091
+os=$(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown OS}")
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+step "php2shell $ver on $host ($os)"
+step "Auditing (the first run refreshes apt and sweeps /home, which can take a minute)..."
+quiet "$tmp/audit.out" "$here/audit.sh" --refresh ${AUDIT_ARGS[@]+"${AUDIT_ARGS[@]}"}
 rc=$?
 # audit.sh tees its output through a background process; give it a moment to
 # finish writing the report before we read it back.
 sleep 1
 report=$(latest_report)
+summary() { sed -n '/^== Summary/,/^Report saved/p' "$1"; }
 
 if [ "$rc" -eq 3 ]; then
   echo
-  echo "################################################################"
-  echo "STOPPED: the audit found a stop-level sign of compromise."
-  echo "Nothing was changed on this server. Do not mitigate or patch yet;"
-  echo "preserve the report and review it first."
-  echo "################################################################"
-  [ -n "$report" ] && sed -n '/^== Summary/,$p' "$report"
+  echo "################ STOPPED: nothing was changed ################"
+  echo "The audit found a stop-level sign of compromise on $host."
+  echo "Do not mitigate or patch yet; preserve the report and review it."
+  echo
+  [ -n "$report" ] && summary "$report" | grep -E '^(STOP|FLAG):'
+  echo
+  echo "Full report: $report"
   exit 3
 elif [ "$rc" -ne 0 ]; then
-  echo "audit.sh failed with exit code $rc; not mitigating." >&2
+  echo "audit.sh failed with exit code $rc; not mitigating. Output:" >&2
+  tail -15 "$tmp/audit.out" >&2
   exit "$rc"
 fi
 
-echo
-echo "== Applying mitigation =="
-"$here/mitigate.sh"
+step "Applying the PHP mitigation..."
+quiet "$tmp/mitigate.out" "$here/mitigate.sh"
 mrc=$?
 
 prc=0
-patch_out=""
 if [ "$NOPATCH" -eq 0 ]; then
-  echo
-  echo "== Patching PHP where a fixed build exists =="
-  patch_out=$(mktemp)
+  step "Patching PHP where a fixed build exists..."
   # The audit above already refreshed apt. $EOL is intentionally unquoted: empty means no argument.
   # shellcheck disable=SC2086
-  "$here/patch.sh" --no-refresh $EOL 2>&1 | tee "$patch_out"
-  prc=${PIPESTATUS[0]}
+  quiet "$tmp/patch.out" "$here/patch.sh" --no-refresh $EOL
+  prc=$?
 fi
 
-# Re-audit quietly so the final Summary shows PHP state after mitigation and
-# patching, not before. Compromise checks are skipped: the first audit already
-# did them, and repeating them minutes later only adds false flags (the
-# DigitalOcean console key from the first audit has expired by now, which
-# looks like a changed authorized_keys).
+# Re-audit PHP state only: the first audit already did the compromise checks,
+# and repeating them minutes later adds false flags (the DigitalOcean console
+# key seen by the first audit has expired by now, which looks like a changed
+# authorized_keys).
+step "Re-checking PHP state..."
 "$here/audit.sh" --php-only >/dev/null 2>&1
 sleep 1
 final=$(latest_report)
 
+mit_versions=$(grep '^== PHP' "$tmp/mitigate.out" 2>/dev/null | sed 's/^== //; s/ ==$//' | paste -sd, - | sed 's/,/, /g')
+flags=$( { [ -n "$report" ] && summary "$report" | grep -E '^FLAG:' | grep -vE '^FLAG: php'
+           [ -n "$final" ] && summary "$final" | grep -E '^FLAG:'; } )
+
 echo
-echo "################ RESULT (copy from here) ################"
-echo "mitigate.sh exit code: $mrc"
-if [ -n "$patch_out" ]; then
-  echo "patch.sh exit code: $prc"
-  sed -n '/^== PATCH SUMMARY/,$p' "$patch_out"
-  rm -f "$patch_out"
+echo "======================= php2shell result ======================="
+echo "Server:      $host ($os)"
+echo "Release:     $ver"
+echo "Stop-level:  none"
+if [ "$mrc" -eq 0 ]; then
+  echo "Mitigation:  applied to ${mit_versions:-no PHP-FPM versions found}"
+else
+  echo "Mitigation:  PROBLEM (exit $mrc)"
+  grep -E 'WARNING|ERROR' "$tmp/mitigate.out" | sed 's/^/             /'
 fi
-[ -n "$final" ] && sed -n '/^== Summary/,$p' "$final"
+if [ "$NOPATCH" -eq 1 ]; then
+  echo "Patch:       skipped (--no-patch)"
+elif [ -f "$tmp/patch.out" ]; then
+  echo "Patch:"
+  sed -n '/^== PATCH SUMMARY/,$p' "$tmp/patch.out" | tail -n +2 | sed 's/^/  /'
+  if [ "$prc" -ne 0 ]; then
+    echo "  patch.sh exit code: $prc. Last lines of its output:"
+    tail -12 "$tmp/patch.out" | sed 's/^/    /'
+  fi
+  if grep -q '^pid ' "$tmp/patch.out" 2>/dev/null; then
+    echo "  Restart these (still on old PHP):"
+    sed -n '/Processes still on old PHP/,/PATCH SUMMARY/p' "$tmp/patch.out" | grep '^pid ' | sed 's/^/    /'
+  fi
+fi
+if [ -n "$flags" ]; then
+  n=$(echo "$flags" | wc -l)
+  echo "To review ($n):"
+  echo "$flags" | sed 's/^FLAG: /  - /'
+else
+  echo "To review:   nothing flagged"
+fi
+echo "Full report: $report"
+[ "$VERBOSE" -eq 0 ] && echo "(run ./run.sh --verbose to see the full output on screen)"
+echo "================================================================"
 
 if [ "$mrc" -ne 0 ] || [ "$prc" -ne 0 ]; then exit 1; fi
 exit 0

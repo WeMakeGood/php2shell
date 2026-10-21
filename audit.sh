@@ -46,6 +46,9 @@ warn() { WARN+=("$*"); }
 # Stop-level: signs of an active or live compromise. run.sh refuses to go on
 # when these appear. Everything else is for a human to review.
 hard() { HARD+=("$*"); }
+# First N lines of a list on one line, so a flag names what it found and the
+# long output never has to be searched to understand it.
+eg() { echo "$1" | head -n "${2:-3}" | sed 's/  */ /g' | paste -sd';' -; }
 h() { printf '\n== %s ==\n' "$*"; }
 
 # First fixed upstream release per branch. 8.1 and older have none.
@@ -179,7 +182,7 @@ if [ -n "$workers" ]; then
   kids=$(ps -o pid,ppid,user,etime,args --ppid "$workers" 2>/dev/null | tail -n +2)
   if [ -n "$kids" ]; then
     echo "$kids"
-    hard "child processes under php-fpm workers (see report)"
+    hard "child processes under php-fpm workers: $(eg "$kids" 2)"
   else
     echo "none"
   fi
@@ -189,6 +192,7 @@ fi
 
 echo "-- processes running from a deleted executable --"
 found=0
+delcmds=""
 for p in /proc/[0-9]*; do
   if readlink "$p/exe" 2>/dev/null | grep -q '(deleted)'; then
     pid=${p#/proc/}
@@ -197,11 +201,12 @@ for p in /proc/[0-9]*; do
     # bpfilter_umh is a kernel-spawned helper whose binary is always "deleted".
     case "$cmd" in 'php-fpm: '*|bpfilter_umh*) continue ;; esac
     echo "pid $pid: $cmd"
+    delcmds="$delcmds pid $pid ${cmd:0:50};"
     found=1
   fi
 done
 if [ "$found" -eq 1 ]; then
-  warn "process running from deleted executable (see report)"
+  warn "process running from a deleted executable (often a service upgraded without a restart):$delcmds"
 else
   echo "none"
 fi
@@ -217,8 +222,13 @@ if [ -n "$up" ]; then
   # Plugin caches and WP All Import's functions.php are normal output that
   # buried everything else in a 75-file list; they stay counted above.
   echo "-- everything except uploads/cache/ and wpallimport/functions.php (nothing capped) --"
-  echo "$up" | grep -vE '/wp-content/uploads/(cache/|([^/]+/)*wpallimport/functions\.php$)'
-  warn "PHP files in wp-content/uploads (review the list above)"
+  upx=$(echo "$up" | grep -vE '/wp-content/uploads/(cache/|([^/]+/)*wpallimport/functions\.php$)')
+  if [ -n "$upx" ]; then
+    echo "$upx"
+    warn "$(echo "$upx" | wc -l) PHP file(s) in wp-content/uploads outside cache/wpallimport, e.g. $(eg "$upx" 3)"
+  else
+    echo "(none outside cache and wpallimport)"
+  fi
 else
   echo "none"
 fi
@@ -235,11 +245,11 @@ if [ "$SCAN" -eq 1 ]; then
     bak=$(echo "$hits" | grep -E '/(backups|public\.bak|migrate)/')
     if [ -n "$live" ]; then
       echo "MATCHES OUTSIDE BACKUP-LOOKING PATHS:"; echo "$live"
-      hard "known backdoor signature outside backup folders (see report)"
+      hard "known backdoor signature outside backup folders: $(eg "$live" 3)"
     fi
     if [ -n "$bak" ]; then
       echo "matches in backup-looking paths: $(echo "$bak" | wc -l) (first 20)"; echo "$bak" | head -20
-      warn "backdoor signatures in backup copies: past infection; confirm nginx never serves these folders"
+      warn "known backdoor signatures in $(echo "$bak" | wc -l) backup copy file(s), e.g. $(eg "$bak" 2); past infection, confirm nginx never serves these folders"
     fi
   else
     echo "none"
@@ -250,7 +260,7 @@ if [ "$SCAN" -eq 1 ]; then
     | grep -vE '/(backups|public\.bak|migrate)/')
   if [ -n "$gen" ]; then
     echo "$gen" | head -30; echo "total: $(echo "$gen" | wc -l)"
-    warn "eval(base64/gzinflate) patterns found (review)"
+    warn "eval(base64/gzinflate) in $(echo "$gen" | wc -l) file(s), e.g. $(eg "$gen" 3)"
   else
     echo "none"
   fi
@@ -266,7 +276,7 @@ recent=$(find /home -xdev \
 if [ -n "$recent" ]; then
   echo "$recent" | head -50
   echo "total: $(echo "$recent" | wc -l) (WordPress core updates and wp-config edits are legitimate causes)"
-  warn "recently modified PHP files outside updatable dirs (review)"
+  warn "$(echo "$recent" | wc -l) PHP file(s) changed in $DAYS days outside plugins/themes/core, e.g. $(eg "$recent" 3)"
 else
   echo "none"
 fi
@@ -288,7 +298,7 @@ pers=$(find /etc/systemd/system /etc/sudoers.d /etc/profile.d /etc/ssh /usr/loca
   -type f -mtime "-$DAYS" 2>/dev/null)
 if [ -n "$pers" ]; then
   echo "$pers"
-  warn "persistence-related files changed recently (review)"
+  warn "persistence-related files changed in $DAYS days: $(eg "$pers" 3)"
 else
   echo "none"
 fi
@@ -317,7 +327,7 @@ for d in /root /home/*; do
   # A console key explains a fresh mtime, so only flag when nothing explains it.
   # The permanent keys are still listed above for a human to check.
   if find "$k" -mtime "-$DAYS" | grep -q . && ! grep -q -- '-dotty_ssh' "$k"; then
-    warn "authorized_keys changed recently: $k"
+    warn "authorized_keys changed in $DAYS days: $k ($(stat -c '%y' "$k" | cut -d. -f1))"
   fi
 done
 
