@@ -1,2 +1,7 @@
 # Server- and client-specific notes stay local; this repo is public.
 *.local.md
+*.local.sh
+
+# Anything pulled back from client servers (audit reports, backups, configs).
+reports/
+backups/
