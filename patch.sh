@@ -5,19 +5,21 @@
 # when apt offers one. It only touches packages named php<version>-*, never a
 # full dist-upgrade, and it keeps Forge's edited php.ini and pool files.
 #
-# What counts as "fixed":
-#   - PHP 8.2-8.5: the upstream release 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 or later.
-#   - Ubuntu's own packages, which backport the fix under an old version number:
-#     22.04 php8.1 >= 8.1.2-1ubuntu2.28, 24.04 php8.3 >= 8.3.6-0ubuntu0.24.04.13,
-#     26.04 php8.5 >= 8.5.4-0ubuntu1.5. (Revisions taken from ma.ttias.be and
-#     teramont.net; check them against Ubuntu's security notices.)
-#   - PHP 8.1 and older from the Ondrej PPA/sury: no published way to tell, so a
-#     newer build is only installed with --include-eol, and reported as unverified.
+# A build counts as "fixed" when any of these hold (checked before installing):
+#   - its own changelog names CVE-2026-109618 or CVE-2026-109619. The script
+#     downloads the candidate php<version>-common package and reads it, so this
+#     works for PHP 8.1 and older and for Ubuntu's backports alike;
+#   - it is upstream 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 or later;
+#   - it is Ubuntu's own backport: 22.04 php8.1 >= 8.1.2-1ubuntu2.28, 24.04 php8.3
+#     >= 8.3.6-0ubuntu0.24.04.13, 26.04 php8.5 >= 8.5.4-0ubuntu1.5 (revisions from
+#     ma.ttias.be and teramont.net; the changelog check above is the primary test).
+# A newer PHP 8.1-or-older build that fails all of those is only installed with
+# --include-eol, and reported as unverified.
 #
 # Usage: sudo ./patch.sh [--dry-run] [--no-refresh] [--include-eol]
 #   --dry-run      show what would be upgraded, change nothing
 #   --no-refresh   skip apt-get update (run.sh has just done it)
-#   --include-eol  also install a newer build for PHP 8.1 and older
+#   --include-eol  also install a newer build for PHP 8.1 and older that can't be verified
 
 set -u
 
@@ -25,7 +27,7 @@ DRY=0
 REFRESH=1
 EOL=0
 
-usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -66,7 +68,7 @@ ubuntu_fixed() {
 # "1:8.4.27-1+ubuntu24.04.1+deb.sury.org+1" -> 8.4.27
 upstream_of() { echo "$1" | sed -E 's/^[0-9]+://' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
 
-# Is package version $1 on branch $2 known to contain the fix?
+# Is package version $1 on branch $2 known to contain the fix, going by its number alone?
 is_fixed() {
   local ver="$1" branch="$2" up need ub
   [ -n "$ver" ] && [ "$ver" != "(none)" ] || return 1
@@ -82,6 +84,27 @@ is_fixed() {
     dpkg --compare-versions "$ver" ge "$ub" && return 0
   fi
   return 1
+}
+
+# Does the installed php<version>-common changelog name the CVEs?
+installed_names_fix() {
+  zgrep -qE 'CVE-2026-10961[89]' "/usr/share/doc/php$1-common/changelog.Debian.gz" 2>/dev/null
+}
+
+# Download candidate php<version>-common into a scratch directory (no install)
+# and read its changelog. This is what makes PHP 8.1 and older verifiable.
+candidate_names_fix() {
+  local v="$1" cand="$2" d f ok=1
+  [ -n "$cand" ] && [ "$cand" != "(none)" ] || return 1
+  d=$(mktemp -d) || return 1
+  if ( cd "$d" && apt-get download "php$v-common=$cand" >/dev/null 2>&1 ); then
+    f=$(ls "$d"/php"$v"-common_*.deb 2>/dev/null | head -1)
+    if [ -n "$f" ] && dpkg-deb -x "$f" "$d/x" 2>/dev/null; then
+      zgrep -qE 'CVE-2026-10961[89]' "$d/x/usr/share/doc/php$v-common/changelog.Debian.gz" 2>/dev/null && ok=0
+    fi
+  fi
+  rm -rf "$d"
+  return $ok
 }
 
 pkg_version() { dpkg-query -W -f='${Version}' "$1" 2>/dev/null; }
@@ -107,7 +130,7 @@ for v in $versions; do
   echo "installed: $inst"
   echo "candidate: ${cand:-none}"
 
-  if is_fixed "$inst" "$v"; then
+  if is_fixed "$inst" "$v" || installed_names_fix "$v"; then
     echo "already on a fixed build"
     RESULTS+=("PHP $v: already fixed ($inst)")
     continue
@@ -117,14 +140,18 @@ for v in $versions; do
   go=0
   if is_fixed "$cand" "$v"; then
     go=1
+  elif [ -n "$cand" ] && [ "$cand" != "(none)" ] && dpkg --compare-versions "$cand" gt "$inst" \
+       && candidate_names_fix "$v" "$cand"; then
+    echo "candidate's changelog names the CVEs"
+    go=1
   elif [ -z "$(upstream_fixed "$v")" ] && [ -n "$cand" ] && [ "$cand" != "(none)" ] \
        && dpkg --compare-versions "$cand" gt "$inst"; then
-    # EOL branch with a newer build: nothing here proves it contains the fix.
+    # EOL branch with a newer build whose changelog doesn't name the fix.
     verified=0
     if [ "$EOL" -eq 1 ]; then
       go=1
     else
-      echo "a newer build exists ($cand) but its fix status can't be verified; rerun with --include-eol to install it"
+      echo "a newer build exists ($cand) but nothing shows it contains the fix; rerun with --include-eol to install it anyway"
       RESULTS+=("PHP $v: newer build $cand available, UNVERIFIED (not installed)")
       continue
     fi
