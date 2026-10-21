@@ -4,7 +4,7 @@ Scripts for checking and temporarily mitigating the PHP2Shell flaws (CVE-2026-10
 
 These are **not** a fix. The fix is a patched PHP build (8.5.12, 8.4.27, 8.3.36, 8.2.35 or a vendor backport). PHP 8.1 and older have no upstream release.
 
-**Current release: `v1.4.0`**
+**Current release: `v1.5.0`**
 
 ## Quick start (run as root on each server)
 
@@ -15,7 +15,7 @@ Snapshot the droplet first, then paste this one line. It fetches the current rel
 4. re-audits, so the final Summary shows the state after the changes.
 
 ```sh
-cd /root && rm -rf php2shell && git clone --branch v1.4.0 --depth 1 https://github.com/WeMakeGood/php2shell.git && cd php2shell && ./run.sh
+cd /root && rm -rf php2shell && git clone --branch v1.5.0 --depth 1 https://github.com/WeMakeGood/php2shell.git && cd php2shell && ./run.sh
 ```
 
 - **Stop-level signs** are a process spawned by a PHP worker, a known backdoor in a live site folder, or `/etc/ld.so.preload`. On any of these `run.sh` exits with code 3, prints `STOPPED`, and changes nothing. Review the report before doing anything else.
@@ -35,6 +35,7 @@ cd /root && rm -rf php2shell && git clone --branch v1.4.0 --depth 1 https://gith
 | `audit.sh` | Reports installed PHP packages, candidate versions, patch verdict per PHP version, which sites use which version, effective ini values, and basic compromise indicators | No (writes one root-only report to `/root`) |
 | `mitigate.sh` | Writes `/etc/php/X/fpm/conf.d/99-php2shell-mitigation.ini` (upload progress off, strict sessions) and reloads FPM. `--dry-run` and `--revert` supported | Yes, reversible |
 | `patch.sh` | Upgrades each installed PHP-FPM version to a build that carries the fix. A build counts as fixed if its own changelog names the CVEs (the script downloads the candidate package and reads it), or it is upstream 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 or later, or Ubuntu's own backported revision. Only touches `php<version>-*` packages. Retries transient repository errors. `--dry-run` supported; a newer PHP 8.1-or-older build whose changelog doesn't name the fix is only installed with `--include-eol`, reported as unverified | Yes (package upgrade) |
+| `upgrade.sh` | In-place Ubuntu release upgrade for Forge-style servers (20.04 to 22.04 to 24.04), one hop at a time: `check`, `prepare`, `hop`, `status`, `verify`, `post`. Changes need `--yes`; without it, it only prints the plan. See the section below | Yes (OS upgrade) |
 | `preflight.sh` | Read-only snapshot for planning an in-place Ubuntu release upgrade: disk, package health, third-party apt sources, where key packages came from, Forge files, and a per-site HTTP baseline (`BASELINE` lines) to compare after each step. Writes nothing | No |
 | `run.sh` | The Quick start: audit, then `mitigate.sh`, then `patch.sh`, then a fresh audit. Stops before changing anything if the audit finds a stop-level sign of compromise | Yes |
 | `nginx-guard.sh` | Per-site nginx snippets in Forge's `forge-conf/<site>/server/` directory: `--writes` (only GET/HEAD/OPTIONS), `--multipart` (reject multipart bodies), `--cf-only` / `--cf-auto` (accept only Cloudflare's IP ranges). `list`, `apply --dry-run` and `revert` supported | Yes, reversible |
@@ -60,6 +61,34 @@ The Ondřej PPA publishes only for Ubuntu 22.04 and 24.04, so PHP from it on 20.
 - After applying, it tests each site from the server itself. A failed self-test returns a non-zero exit code.
 - Sites without Forge's `forge-conf/<site>/server/` include in their nginx file are skipped, never edited.
 - These controls cover the confirmed multipart paths only. They do not fix the bug.
+
+## In-place Ubuntu upgrade (20.04 to 22.04 to 24.04)
+
+The Ondřej PPA publishes nothing for 20.04 and Launchpad has deleted the old 20.04 PHP and nginx files, so those servers cannot get a patched PHP through apt. Moving them to 24.04 in place keeps the IP, the data and the Forge configuration. [Forge advises against OS release upgrades](https://laravel.com/forge/docs/knowledge-base/servers); this tool keeps Forge's files in place, but it has never been shown to leave Forge able to manage a server afterwards.
+
+**Snapshot the droplet first** (power off or stop MySQL for a consistent one). Run from the DigitalOcean console, because SSH is unreachable for several minutes during each hop.
+
+```sh
+./upgrade.sh check                        # read-only: is this server ready?
+./upgrade.sh prepare --swap-mysql --yes   # backups, set third-party sources aside, swap MySQL, update Ubuntu
+./upgrade.sh hop --yes                    # 20.04 -> 22.04, detached; watch with ./upgrade.sh status
+reboot
+./upgrade.sh verify                       # services, Forge files and site baseline vs before
+./upgrade.sh prepare --yes                # again, for the second hop
+./upgrade.sh hop --yes                    # 22.04 -> 24.04
+reboot
+./upgrade.sh verify                       # PHP is down at this point (sites return 502): expected
+./upgrade.sh post --yes                   # restore the PHP PPA, reinstall PHP, patch, mitigate, verify
+```
+
+What to expect, from rehearsals on a clone of a real server:
+- **The release tool refuses to start** while the dead 20.04 sources are enabled ("install all available updates"), and while Ubuntu's `mysql-server` conflicts with MySQL.com's. `prepare` handles both: it sets third-party sources aside and, with `--swap-mysql`, replaces the MySQL.com packages with Ubuntu's `mysql-server` on the same data directory (no purge).
+- **Hop 1 keeps PHP; hop 2 removes it.** The PPA's PHP and nginx packages survive the first hop but not the second. Sites that need PHP return 502 from then until `post` finishes. Plan a maintenance window.
+- **nginx, Node and Redis are replaced by Ubuntu's own,** and MySQL by Ubuntu's. The existing `nginx.conf`, `php.ini`, `www.conf`, `sshd_config`, ufw rules and sudoers files were all left unchanged.
+- **SSH drops for several minutes** while `sshd` is restarted.
+- **Launchpad returns 503s under load.** `post` retries. To avoid depending on it, copy the PHP `.deb` files for the target release into `/var/cache/apt/archives` before `post`; apt verifies each against the signed index it downloads itself, so nothing is trusted just because it is there.
+
+Limits: rehearsed on clones of one server (5 WordPress sites, PHP 8.1, MySQL.com 8.0). Not yet run on a production server. Servers with PHP 7.x or 8.0 sites are untested, and whether the PPA's 24.04 builds of those versions carry the PHP2Shell fix has not been checked. Forge's ability to manage the server afterwards can only be checked on the real server.
 
 ## Limits
 
