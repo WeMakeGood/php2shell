@@ -4,20 +4,26 @@ Scripts for checking and temporarily mitigating the PHP2Shell flaws (CVE-2026-10
 
 These are **not** a fix. The fix is a patched PHP build (8.5.12, 8.4.27, 8.3.36, 8.2.35 or a vendor backport). PHP 8.1 and older have no upstream release.
 
-**Current release: `v1.1.0`**
+**Current release: `v1.2.0`**
 
 ## Quick start (run as root on each server)
 
-Snapshot the droplet first, then paste this one line. It fetches the current release, audits the server, and applies the PHP mitigation unless the audit finds a stop-level sign of compromise:
+Snapshot the droplet first, then paste this one line. It fetches the current release and then:
+1. audits the server (and stops if it finds a stop-level sign of compromise),
+2. applies the PHP mitigation,
+3. upgrades PHP to a patched build for every installed version that has one,
+4. re-audits, so the final Summary shows the state after the changes.
 
 ```sh
-cd /root && rm -rf php2shell && git clone --branch v1.1.0 --depth 1 https://github.com/WeMakeGood/php2shell.git && cd php2shell && ./run.sh
+cd /root && rm -rf php2shell && git clone --branch v1.2.0 --depth 1 https://github.com/WeMakeGood/php2shell.git && cd php2shell && ./run.sh
 ```
 
 - **Stop-level signs** are a process spawned by a PHP worker, a known backdoor in a live site folder, or `/etc/ld.so.preload`. On any of these `run.sh` exits with code 3, prints `STOPPED`, and changes nothing. Review the report before doing anything else.
 - Other flags (uploads PHP files, recently changed files and so on) are reported for you to review but don't block.
+- **The patch step restarts PHP-FPM** for each version it upgrades (a few seconds of interruption) and may move a branch several releases forward (for example 8.4.5 to 8.4.27). It keeps your edited `php.ini` and pool files, and refuses any upgrade that would remove packages. Where no fixed build exists (for example the Ondřej PPA on Ubuntu 20.04) it says so and changes nothing. Use `./run.sh --no-patch` to skip it.
+- Long-running workers (Forge daemons, queue workers) keep the old PHP in memory until restarted. The patch step lists any it finds.
 - The Summary prints last, so copy from the `RESULT` line down. The audit prints the release it ran as, and its full report is saved under `/root`. Reports contain cron lines and key comments, so review before sharing them.
-- Undo the mitigation with `./mitigate.sh --revert`. `audit.sh`, `mitigate.sh` and `nginx-guard.sh` can each be run on their own.
+- Undo the mitigation with `./mitigate.sh --revert`. `audit.sh`, `mitigate.sh`, `patch.sh` and `nginx-guard.sh` can each be run on their own (`./patch.sh --dry-run` previews the upgrade).
 
 ## Scripts
 
@@ -25,7 +31,8 @@ cd /root && rm -rf php2shell && git clone --branch v1.1.0 --depth 1 https://gith
 |---|---|---|
 | `audit.sh` | Reports installed PHP packages, candidate versions, patch verdict per PHP version, which sites use which version, effective ini values, and basic compromise indicators | No (writes one root-only report to `/root`) |
 | `mitigate.sh` | Writes `/etc/php/X/fpm/conf.d/99-php2shell-mitigation.ini` (upload progress off, strict sessions) and reloads FPM. `--dry-run` and `--revert` supported | Yes, reversible |
-| `run.sh` | The Quick start: runs `audit.sh --refresh`, then `mitigate.sh` unless the audit stops it | Yes, reversible |
+| `patch.sh` | Upgrades each installed PHP-FPM version to a build known to carry the fix (upstream 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12, or Ubuntu's own backported revision). Only touches `php<version>-*` packages. `--dry-run` supported; PHP 8.1 and older only with `--include-eol`, reported as unverified | Yes (package upgrade) |
+| `run.sh` | The Quick start: audit, then `mitigate.sh`, then `patch.sh`, then a fresh audit. Stops before changing anything if the audit finds a stop-level sign of compromise | Yes |
 | `nginx-guard.sh` | Per-site nginx snippets in Forge's `forge-conf/<site>/server/` directory: `--writes` (only GET/HEAD/OPTIONS), `--multipart` (reject multipart bodies), `--cf-only` / `--cf-auto` (accept only Cloudflare's IP ranges). `list`, `apply --dry-run` and `revert` supported | Yes, reversible |
 
 The mitigation only reduces exposure to one suspected attack path. See [PHP's advisory](https://www.php.net/archive/2026.php).
@@ -55,5 +62,7 @@ The Ondřej PPA publishes only for Ubuntu 22.04 and 24.04, so PHP from it on 20.
 - File modification times are easy for an attacker to forge. A clean compromise check is not proof of a clean server.
 - Request logs do not record POST bodies, so exploitation attempts can't be found there.
 - Tested on Ubuntu 22.04 (nginx plus PHP 8.1 and 8.3 from the Ondřej PPA, with systemd). Not yet run on 24.04, and `mitigate.sh` and `audit.sh` have been run on real 20.04 Forge servers. `nginx-guard.sh` has only been tested against a Forge-style layout, not a real Forge nginx file. Run `--dry-run` first.
+- `patch.sh` has been tested end to end only with Ubuntu's own fixed package (22.04 `php8.1` 8.1.2-1ubuntu2 to 8.1.2-1ubuntu2.28). It has not yet been run against the PPA's fixed 8.3 / 8.4 builds, because the PPA was unreachable when it was written. The logic that recognises those builds is by version number.
+- `patch.sh` trusts a table of Ubuntu revisions taken from secondary sources. After patching, `audit.sh` independently reads the package changelog for the CVE IDs where Ubuntu lists them.
 - The patch verdict compares the upstream version from `php-fpm -v` and looks for the CVE IDs in the package changelog. A vendor backport that does neither shows as "NOT PATCHED" or "UNKNOWN" even if it is fixed.
 - The compromise check lists shells under FPM workers, PHP files in uploads and recent changes. The signature sweep only knows one backdoor family (`2index.php` / `lock360.php`). It is a triage aid, not proof.
