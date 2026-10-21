@@ -74,7 +74,7 @@ for v in $(ls /etc/php 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$'); do
 
   # A pool-level php_admin_value/php_value is applied after php.ini and would
   # silently undo the mitigation for that pool.
-  if grep -nE 'php(_admin)?_(value|flag)\[session\.upload_progress\.enabled\]' \
+  if grep -nE '^\s*php(_admin)?_(value|flag)\[session\.upload_progress\.enabled\]' \
       /etc/php/"$v"/fpm/pool.d/*.conf 2>/dev/null; then
     echo "WARNING: a pool overrides session.upload_progress.enabled (shown above)" >&2
     status=1

@@ -128,7 +128,7 @@ for v in $(ls /etc/php 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$'); do
   fi
 
   echo "-- per-pool overrides that could undo mitigation or hit memory settings --"
-  grep -nE 'php(_admin)?_(value|flag)\[(session\.|memory_limit|post_max_size|upload_max_filesize)' \
+  grep -nE '^\s*php(_admin)?_(value|flag)\[(session\.|memory_limit|post_max_size|upload_max_filesize)' \
     /etc/php/"$v"/fpm/pool.d/*.conf 2>/dev/null || echo "none"
 done
 

@@ -32,4 +32,6 @@ Read the audit's `Summary` section first. Reports contain cron lines and key com
 
 - File modification times are easy for an attacker to forge. A clean compromise check is not proof of a clean server.
 - Request logs do not record POST bodies, so exploitation attempts can't be found there.
-- Tested only by syntax check so far; run `--dry-run` first on a server you can afford to snapshot.
+- Tested on Ubuntu 22.04 (nginx plus PHP 8.1 and 8.3 from the Ondřej PPA, with systemd). Not yet run on 20.04 or 24.04. Run `--dry-run` first and snapshot the droplet.
+- The patch verdict compares the upstream version from `php-fpm -v` and looks for the CVE IDs in the package changelog. A vendor backport that does neither shows as "NOT PATCHED" or "UNKNOWN" even if it is fixed.
+- The compromise check lists shells under FPM workers, PHP files in uploads and recent changes. It is a triage aid, not proof.
