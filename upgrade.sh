@@ -91,12 +91,15 @@ do_check() {
 }
 
 save_restore_set() {
-  # The PHP packages to bring back afterwards. Written once, from the first
-  # (20.04) prepare, because a hop can remove them.
-  [ -f "$STATE/restore-set.txt" ] && return 0
-  dpkg-query -W -f='${db:Status-Abbrev} ${Package} ${Version}\n' 2>/dev/null \
-    | awk '$1=="ii" && $3 ~ /deb\.sury\.org/ {print $2}' | grep -E '^php' | sort -u > "$STATE/restore-set.txt"
-  echo "   restore set: $(wc -l < "$STATE/restore-set.txt") packages ($(tr '\n' ' ' < "$STATE/restore-set.txt" | cut -c1-120)...)"
+  # The PHP packages to bring back afterwards. A hop can remove them, so this is
+  # recorded before each hop, and merged with what was recorded earlier: a PHP
+  # version added in between (for example through Forge) must come back too.
+  local cur
+  cur=$(dpkg-query -W -f='${db:Status-Abbrev} ${Package} ${Version}\n' 2>/dev/null \
+    | awk '$1=="ii" && $3 ~ /deb\.sury\.org/ {print $2}' | grep -E '^php')
+  { [ -f "$STATE/restore-set.txt" ] && cat "$STATE/restore-set.txt"; echo "$cur"; } | sed '/^$/d' | sort -u > "$STATE/restore-set.txt.new" \
+    && mv "$STATE/restore-set.txt.new" "$STATE/restore-set.txt"
+  echo "   restore set: $(wc -l < "$STATE/restore-set.txt") packages ($(grep -oE '^php[0-9]+\.[0-9]+-fpm$' "$STATE/restore-set.txt" | sed 's/^php//; s/-fpm$//' | tr '\n' ' ')FPM versions)"
 }
 
 do_prepare() {
