@@ -1,0 +1,2 @@
+# Server- and client-specific notes stay local; this repo is public.
+*.local.md

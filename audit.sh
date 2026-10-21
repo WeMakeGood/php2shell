@@ -70,6 +70,7 @@ if [ "$REFRESH" -eq 1 ]; then
 fi
 
 h "System"
+echo "php2shell $(git -C "$(dirname "$0")" describe --tags --always 2>/dev/null || echo unknown)"
 hostname -f 2>/dev/null || hostname
 # shellcheck disable=SC1091
 . /etc/os-release && echo "$PRETTY_NAME"
