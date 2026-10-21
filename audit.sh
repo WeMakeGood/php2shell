@@ -38,7 +38,11 @@ REPORT="/root/php2shell-audit-$(hostname -s)-$(date +%Y%m%d-%H%M%S).txt"
 exec > >(tee "$REPORT") 2>&1
 
 WARN=()
+HARD=()
 warn() { WARN+=("$*"); }
+# Stop-level: signs of an active or live compromise. run.sh refuses to go on
+# when these appear. Everything else is for a human to review.
+hard() { HARD+=("$*"); }
 h() { printf '\n== %s ==\n' "$*"; }
 
 # First fixed upstream release per branch. 8.1 and older have none.
@@ -171,7 +175,7 @@ if [ -n "$workers" ]; then
   kids=$(ps -o pid,ppid,user,etime,args --ppid "$workers" 2>/dev/null | tail -n +2)
   if [ -n "$kids" ]; then
     echo "$kids"
-    warn "child processes under php-fpm workers (see report)"
+    hard "child processes under php-fpm workers (see report)"
   else
     echo "none"
   fi
@@ -227,7 +231,7 @@ if [ "$SCAN" -eq 1 ]; then
     bak=$(echo "$hits" | grep -E '/(backups|public\.bak|migrate)/')
     if [ -n "$live" ]; then
       echo "MATCHES OUTSIDE BACKUP-LOOKING PATHS:"; echo "$live"
-      warn "known backdoor signature outside backup folders (see report)"
+      hard "known backdoor signature outside backup folders (see report)"
     fi
     if [ -n "$bak" ]; then
       echo "matches in backup-looking paths: $(echo "$bak" | wc -l) (first 20)"; echo "$bak" | head -20
@@ -286,7 +290,7 @@ else
 fi
 if [ -e /etc/ld.so.preload ]; then
   echo "/etc/ld.so.preload EXISTS:"; cat /etc/ld.so.preload
-  warn "/etc/ld.so.preload exists (rootkit indicator unless you created it)"
+  hard "/etc/ld.so.preload exists (rootkit indicator unless you created it)"
 else
   echo "/etc/ld.so.preload: absent"
 fi
@@ -320,10 +324,15 @@ echo "-- listening sockets --"
 ss -tlnp 2>/dev/null
 
 h "Summary"
-if [ ${#WARN[@]} -eq 0 ]; then
+if [ ${#HARD[@]} -gt 0 ]; then
+  printf 'STOP: %s\n' "${HARD[@]}"
+fi
+if [ ${#WARN[@]} -eq 0 ] && [ ${#HARD[@]} -eq 0 ]; then
   echo "No flags raised."
-else
+elif [ ${#WARN[@]} -gt 0 ]; then
   printf 'FLAG: %s\n' "${WARN[@]}"
 fi
 echo
 echo "Report saved to $REPORT (root-only; it may contain cron lines, review before sharing)."
+# Exit 3 tells run.sh not to change anything on this server.
+[ ${#HARD[@]} -eq 0 ] || exit 3
